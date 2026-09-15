@@ -1,28 +1,27 @@
-# Workflow compacto y válido para compilar el APK en la rama `master`.
-# Comentarios breves por bloque; sigue el README (requiere OpenCV/Boost/Ceres locales).
+# Workflow compacto para compilar APK en la rama `master`.
 name: Android CI
 on:
   push:
     branches: [ master ]
-  pull_request:
-  workflow_dispatch:
+  pull_request: {}
+  workflow_dispatch: {}
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # 1) Obtener el código
+      # Clonar el repositorio
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2) Configurar JDK (Java 11)
+      # Configurar JDK (Java 11)
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '11'
 
-      # 3) Cache de Gradle para acelerar builds
+      # Cache de Gradle para acelerar builds
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
@@ -31,7 +30,7 @@ jobs:
             ~/.gradle/wrapper
           key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*','**/gradle-wrapper.properties') }}
 
-      # 4) Instalar Android commandline-tools y paquetes mínimos (robusto: reintentos + comprobaciones)
+      # Instalar Android commandline-tools y paquetes mínimos (con reintentos y comprobación)
       - name: Install Android SDK packages
         run: |
           set -euo pipefail
@@ -48,24 +47,29 @@ jobs:
           yes | sdkmanager --sdk_root="$SDKROOT" "platform-tools" "platforms;android-33" "build-tools;33.0.2"
           yes | sdkmanager --licenses --sdk_root="$SDKROOT" || true
 
-      # 5) (Opcional) Intentar ndk-build para Ceres si existen fuentes (según README)
-      - name: Optional: build ndk libs (ceres)
+      # (Opcional) Compilar bibliotecas NDK/ndk-build (por ejemplo Ceres) si existen
+      - name: Build NDK libs (ceres)
         run: |
           set -euo pipefail
           CERESPATH=app/libs/VINS-Mobile-master/VINS_ThirdPartyLib/ceres-solver/jni
           if [ -d "$CERESPATH" ]; then
-            if command -v ndk-build >/dev/null 2>&1; then (cd "$CERESPATH" && ndk-build -j$(nproc) || true)
-            else ls "$HOME/android-sdk/ndk" || true; fi
+            if command -v ndk-build >/dev/null 2>&1; then
+              (cd "$CERESPATH" && ndk-build -j$(nproc) || true)
+            else
+              echo "ndk-build no encontrado en PATH; listando NDKs instalados:"; ls "$HOME/android-sdk/ndk" || true
+            fi
+          else
+            echo "No se encontró Ceres JNI en $CERESPATH, saltando ndk-build"
           fi
 
-      # 6) Compilar APK release (no firmado)
+      # Compilar APK (assembleRelease) — salida sin firmar
       - name: Build APK
         run: |
           set -euo pipefail
           chmod +x ./gradlew
           ./gradlew --no-daemon -Porg.gradle.jvmargs="-Xmx3g" assembleRelease
 
-      # 7) Subir APK(s) generados como artefacto
+      # Subir APK(s) generados como artefacto
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
