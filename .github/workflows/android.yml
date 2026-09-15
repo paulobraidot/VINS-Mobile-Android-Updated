@@ -1,20 +1,21 @@
-# Workflow compacto para compilar APK en la rama `master`.
+# Workflow compacto y robusto para compilar APK en la rama `master`.
+# Usa r0adkll/setup-android para instalar SDK/platforms/build-tools y evita curl+unzip manual.
 name: Android CI
 on:
   push:
     branches: [ master ]
-  pull_request: {}
-  workflow_dispatch: {}
+  pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # Clonar el repositorio
+      # Clona el repositorio
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Configurar JDK (Java 11)
+      # Configura JDK (Java 11) necesario para Gradle/NDK toolchains
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -30,46 +31,39 @@ jobs:
             ~/.gradle/wrapper
           key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*','**/gradle-wrapper.properties') }}
 
-      # Instalar Android commandline-tools y paquetes mínimos (con reintentos y comprobación)
-      - name: Install Android SDK packages
-        run: |
-          set -euo pipefail
-          SDKROOT="$HOME/android-sdk"
-          mkdir -p "$SDKROOT/cmdline-tools" "$SDKROOT/platform-tools"
-          curl -fSL --retry 3 https://dl.google.com/android/repository/commandlinetools-linux-latest.zip -o cmdline.zip
-          if [ ! -s cmdline.zip ]; then echo "ERROR: cmdline.zip vacío o no descargado" >&2; exit 1; fi
-          unzip -q cmdline.zip -d "$SDKROOT/cmdline-tools"
-          if [ -d "$SDKROOT/cmdline-tools/cmdline-tools" ]; then mv "$SDKROOT/cmdline-tools/cmdline-tools" "$SDKROOT/cmdline-tools/latest"; fi
-          echo "ANDROID_SDK_ROOT=$SDKROOT" >> $GITHUB_ENV
-          echo "ANDROID_HOME=$SDKROOT" >> $GITHUB_ENV
-          echo "$SDKROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "$SDKROOT/platform-tools" >> $GITHUB_PATH
-          yes | sdkmanager --sdk_root="$SDKROOT" "platform-tools" "platforms;android-33" "build-tools;33.0.2"
-          yes | sdkmanager --licenses --sdk_root="$SDKROOT" || true
+      # Instala Android SDK, platform-tools, build-tools y opcional NDK/CMake con una acción estable
+      - name: Setup Android SDK and tools
+        uses: r0adkll/setup-android@v2
+        with:
+          api-level: 33
+          build-tools: '33.0.2'
+          ndk: '21.4.7075529'
+          cmake: '3.10.2.4988404'
 
-      # (Opcional) Compilar bibliotecas NDK/ndk-build (por ejemplo Ceres) si existen
-      - name: Build NDK libs (ceres)
+      # Si el repo contiene Ceres (ndk/ndk-build), intenta compilar las libs NDK
+      - name: Build NDK libs if present
         run: |
           set -euo pipefail
-          CERESPATH=app/libs/VINS-Mobile-master/VINS_ThirdPartyLib/ceres-solver/jni
+          CERESPATH="app/libs/VINS-Mobile-master/VINS_ThirdPartyLib/ceres-solver/jni"
           if [ -d "$CERESPATH" ]; then
+            echo "Ceres JNI encontrado en $CERESPATH — intentando ndk-build"
             if command -v ndk-build >/dev/null 2>&1; then
               (cd "$CERESPATH" && ndk-build -j$(nproc) || true)
             else
-              echo "ndk-build no encontrado en PATH; listando NDKs instalados:"; ls "$HOME/android-sdk/ndk" || true
+              echo "ndk-build no disponible en PATH; listando NDKs instalados:" && ls "$ANDROID_HOME/ndk" || true
             fi
           else
-            echo "No se encontró Ceres JNI en $CERESPATH, saltando ndk-build"
+            echo "No se encontró Ceres JNI; saltando paso NDK"
           fi
 
-      # Compilar APK (assembleRelease) — salida sin firmar
-      - name: Build APK
+      # Compila el APK (assembleRelease). No firma el APK aquí.
+      - name: Build APK (assembleRelease)
         run: |
           set -euo pipefail
           chmod +x ./gradlew
           ./gradlew --no-daemon -Porg.gradle.jvmargs="-Xmx3g" assembleRelease
 
-      # Subir APK(s) generados como artefacto
+      # Sube los APKs generados como artefacto del workflow
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
