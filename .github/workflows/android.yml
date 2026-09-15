@@ -1,0 +1,53 @@
+# Flujo mínimo para compilar APK Android (assembleRelease) y subir el artefacto.
+name: Android CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # Obtener el código
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Configurar JDK (Java 11 recomendado para muchos proyectos Android)
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      # Cache para acelerar builds de Gradle
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*','**/gradle-wrapper.properties') }}
+
+      # Proveer SDK Android (prepara sdkmanager/build-tools/platforms)
+      - name: Setup Android SDK
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          build-tools: '33.0.2'
+          force-avd-creation: false
+
+      # Garantizar permisos y ejecutar la compilación (release sin firmar)
+      - name: Build APK
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon -Porg.gradle.jvmargs="-Xmx3g" assembleRelease
+
+      # Subir APK(s) generados como artefacto del workflow
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VINS-Mobile-Android-Updated
+          path: app/build/outputs/**/*.apk
