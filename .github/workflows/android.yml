@@ -92,5 +92,5 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: apk
+          name: VINS-Mobile-Android-Updated
           path: app/build/outputs/**/*.apk
