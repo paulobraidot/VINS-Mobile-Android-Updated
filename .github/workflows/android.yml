@@ -1,27 +1,30 @@
-# Flujo compacto para compilar el APK (assembleRelease) y subirlo como artefacto.
+# Workflow compacto para compilar el APK en la rama `master`.
+# Este archivo evita el uso de reactivecircus/android-emulator-runner (causó el error),
+# e instala las commandline tools + plataformas/build-tools necesarias directamente.
 name: Android CI
 on:
   push:
-    branches: [ master ]   # rama objetivo
+    branches: [ master ]
   pull_request: {}
   workflow_dispatch: {}
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      # Clona el repo
+      # 1) Clonar el repositorio
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Configura JDK
+      # 2) Instalar JDK (necesario para sdkmanager y gradle)
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '11'
 
-      # Cache de Gradle para acelerar builds
+      # 3) Cache de Gradle para acelerar builds
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
@@ -30,23 +33,34 @@ jobs:
             ~/.gradle/wrapper
           key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*','**/gradle-wrapper.properties') }}
 
-      # Prepara Android SDK / build-tools necesarios
-      - name: Setup Android SDK
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 33
-          build-tools: '33.0.2'
-          force-avd-creation: false
+      # 4) Instalar Android SDK (commandline tools) y paquetes mínimos (platform-tools, platform, build-tools)
+      #    Comentario: No usamos el action de emulator; descargamos commandlinetools, añadimos al PATH y ejecutamos sdkmanager.
+      - name: Install Android SDK (cmdline-tools + platforms)
+        run: |
+          set -e
+          SDKROOT="$HOME/android-sdk"
+          mkdir -p "$SDKROOT/cmdline-tools" "$SDKROOT/platform-tools"
+          # Descargar commandline tools (link general a 'latest')
+          curl -sSL https://dl.google.com/android/repository/commandlinetools-linux-latest.zip -o cmdline.zip
+          unzip -q cmdline.zip -d "$SDKROOT/cmdline-tools"
+          # Algunas zips crean folder 'cmdline-tools'; normalizamos a 'latest'
+          mv "$SDKROOT/cmdline-tools/cmdline-tools" "$SDKROOT/cmdline-tools/latest" || true
+          # Exportar variables para pasos siguientes
+          echo "ANDROID_SDK_ROOT=$SDKROOT" >> $GITHUB_ENV
+          echo "$SDKROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$SDKROOT/platform-tools" >> $GITHUB_PATH
+          # Aceptar licencias e instalar paquetes requeridos (API 33 / build-tools 33.0.2)
+          yes | sdkmanager --sdk_root="$SDKROOT" "platform-tools" "platforms;android-33" "build-tools;33.0.2"
 
-      # Ejecuta la compilación (release sin firmar)
+      # 5) Ejecutar Gradle assembleRelease (release no firmado)
       - name: Build APK
         run: |
           chmod +x ./gradlew
           ./gradlew --no-daemon -Porg.gradle.jvmargs="-Xmx3g" assembleRelease
 
-      # Sube los APK generados como artefacto
+      # 6) Subir APK(s) generados como artefacto
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: VINS-Mobile-Android-Updated
+          name: apk
           path: app/build/outputs/**/*.apk
