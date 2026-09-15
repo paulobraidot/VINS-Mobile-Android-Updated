@@ -1,6 +1,7 @@
 # Workflow compacto para compilar el APK en la rama `master`.
-# Este archivo evita el uso de reactivecircus/android-emulator-runner (causó el error),
-# e instala las commandline tools + plataformas/build-tools necesarias directamente.
+# Comentarios en cada bloque; diseñado para evitar el error de cmdline.zip y
+# añadir comprobaciones básicas. Nota: el proyecto requiere OpenCV/Boost/Ceres
+# en paths locales (ver README) — sin esos artefactos el build en CI puede fallar.
 name: Android CI
 on:
   push:
@@ -11,20 +12,19 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      # 1) Clonar el repositorio
+      # Clona el repositorio
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2) Instalar JDK (necesario para sdkmanager y gradle)
+      # Instala JDK (necesario para sdkmanager/gradle)
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '11'
 
-      # 3) Cache de Gradle para acelerar builds
+      # Cache de Gradle para acelerar builds
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
@@ -33,32 +33,62 @@ jobs:
             ~/.gradle/wrapper
           key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*','**/gradle-wrapper.properties') }}
 
-      # 4) Instalar Android SDK (commandline tools) y paquetes mínimos (platform-tools, platform, build-tools)
-      #    Comentario: No usamos el action de emulator; descargamos commandlinetools, añadimos al PATH y ejecutamos sdkmanager.
-      - name: Install Android SDK (cmdline-tools + platforms)
+      # Instala Android SDK commandline-tools + paquetes mínimos (con reintentos y verificación)
+      - name: Install Android SDK packages
         run: |
-          set -e
+          set -euo pipefail
           SDKROOT="$HOME/android-sdk"
           mkdir -p "$SDKROOT/cmdline-tools" "$SDKROOT/platform-tools"
-          # Descargar commandline tools (link general a 'latest')
-          curl -sSL https://dl.google.com/android/repository/commandlinetools-linux-latest.zip -o cmdline.zip
+          # Descargar con reintentos y fallar en código HTTP
+          curl -fSL --retry 3 https://dl.google.com/android/repository/commandlinetools-linux-latest.zip -o cmdline.zip
+          # Verificar que el zip tiene contenido razonable
+          if [ ! -s cmdline.zip ]; then
+            echo "cmdline.zip vacío o no descargado" >&2
+            ls -l cmdline.zip || true
+            exit 1
+          fi
           unzip -q cmdline.zip -d "$SDKROOT/cmdline-tools"
-          # Algunas zips crean folder 'cmdline-tools'; normalizamos a 'latest'
-          mv "$SDKROOT/cmdline-tools/cmdline-tools" "$SDKROOT/cmdline-tools/latest" || true
-          # Exportar variables para pasos siguientes
+          # Normalizar ruta a cmdline-tools/latest
+          if [ -d "$SDKROOT/cmdline-tools/cmdline-tools" ]; then
+            mv "$SDKROOT/cmdline-tools/cmdline-tools" "$SDKROOT/cmdline-tools/latest"
+          fi
+          # Exportar variables para pasos posteriores
           echo "ANDROID_SDK_ROOT=$SDKROOT" >> $GITHUB_ENV
+          echo "ANDROID_HOME=$SDKROOT" >> $GITHUB_ENV
           echo "$SDKROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "$SDKROOT/platform-tools" >> $GITHUB_PATH
-          # Aceptar licencias e instalar paquetes requeridos (API 33 / build-tools 33.0.2)
-          yes | sdkmanager --sdk_root="$SDKROOT" "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+          # Instalar paquetes: platform-tools, plataforma 33, build-tools 33.0.2, NDK y cmake
+          yes | sdkmanager --sdk_root="$SDKROOT" --install "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;21.4.7075529" "cmake;3.10.2.4988404"
+          # Aceptar licencias por si acaso
+          yes | sdkmanager --licenses --sdk_root="$SDKROOT" || true
 
-      # 5) Ejecutar Gradle assembleRelease (release no firmado)
+      # (Opcional) Compilar dependencias nativas que usan ndk-build si existen
+      - name: Optional: build third-party ndk libs (ceres)
+        run: |
+          set -euo pipefail
+          CERESPATH=app/libs/VINS-Mobile-master/VINS_ThirdPartyLib/ceres-solver/jni
+          if [ -d "$CERESPATH" ]; then
+            echo "Encontrado Ceres JNI en $CERESPATH — ejecutando ndk-build"
+            # ndk-build disponible en $ANDROID_SDK_ROOT/ndk/<version>/...
+            # sdkmanager instaló un NDK; `ndk-build` suele estar en PATH tras instalar ndk
+            if command -v ndk-build >/dev/null 2>&1; then
+              (cd "$CERESPATH" && ndk-build -j$(nproc) || true)
+            else
+              echo "ndk-build no encontrado en PATH; listando ndk instalados:"
+              ls "$HOME/android-sdk/ndk" || true
+            fi
+          else
+            echo "No existe $CERESPATH — saltando ndk-build"
+          fi
+
+      # Ejecuta la compilación Gradle (assembleRelease). No firma el APK.
       - name: Build APK
         run: |
+          set -euo pipefail
           chmod +x ./gradlew
           ./gradlew --no-daemon -Porg.gradle.jvmargs="-Xmx3g" assembleRelease
 
-      # 6) Subir APK(s) generados como artefacto
+      # Sube los APKs generados como artefacto
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
